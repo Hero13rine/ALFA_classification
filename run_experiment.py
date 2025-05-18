@@ -1,4 +1,4 @@
-from train import train_with_params
+"""
 
 # 定义多个实验配置
 experiments = [
@@ -25,8 +25,34 @@ base_config = {
         4: "valid"
     }
 }
+"""
 
-# 运行每个实验
+from train import train_with_params
+
+base_config = {
+    "window_size": 16,
+    "remove_step": 32,
+    "state_input_dim": 17,
+    "train_ratio": 0.7,
+    "val_ratio": 0.15,
+    "test_ratio": 0.15,
+    "min_samples_per_class": 5,
+    "num_classes": 5,
+    "label_map": {
+        0: "normal",
+        1: "engine fault",
+        2: "aileron fault",
+        3: "rudder fault",
+        4: "elevator fault"
+    }
+}
+
+experiments = [
+    {"batch_size": 64, "epochs": 100, "tag": "ce_loss", "loss_type": "cross_entropy"},
+    {"batch_size": 64, "epochs": 100, "tag": "weighted_ce", "loss_type": "weighted_cross_entropy"},
+    {"batch_size": 64, "epochs": 100, "tag": "focal_loss", "loss_type": "focal_loss"},
+]
+
 for exp in experiments:
     config = {**base_config, **exp}
     train_with_params(config)

@@ -14,6 +14,35 @@ from utils.metrics import plot_training_history, evaluate_model
 from callbacks.per_class_callback import PerClassAccuracyCallback
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 
+def get_loss_function(loss_type, y_train=None):
+    if loss_type == 'cross_entropy':
+        return 'categorical_crossentropy'
+    elif loss_type == 'weighted_cross_entropy':
+        from sklearn.utils.class_weight import compute_class_weight
+        import numpy as np
+        import tensorflow.keras.backend as K
+
+        y_int = np.argmax(y_train, axis=1)
+        class_weights = compute_class_weight('balanced', classes=np.unique(y_int), y=y_int)
+        class_weights_tensor = tf.constant(class_weights, dtype=tf.float32)
+
+        def weighted_loss(y_true, y_pred):
+            weights = tf.reduce_sum(class_weights_tensor * y_true, axis=-1)
+            loss = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
+            return loss * weights
+
+        return weighted_loss
+
+    elif loss_type == 'focal_loss':
+        def focal_loss(gamma=2., alpha=0.25):
+            def focal_loss_fixed(y_true, y_pred):
+                y_pred = tf.clip_by_value(y_pred, 1e-7, 1 - 1e-7)
+                cross_entropy = -y_true * tf.math.log(y_pred)
+                loss = alpha * tf.math.pow(1 - y_pred, gamma) * cross_entropy
+                return tf.reduce_sum(loss, axis=-1)
+            return focal_loss_fixed
+        return focal_loss()
+
 
 def train_with_params(config):
     print(f"Running experiment with config: {config}")
@@ -38,7 +67,8 @@ def train_with_params(config):
     # === 模型构建 ===
     input_shape = (X_train.shape[1], X_train.shape[2])
     model = build_lstm_model(input_shape, num_classes=config["num_classes"])
-    model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+    loss_fn = get_loss_function(config.get("loss_type", "cross_entropy"), y_train)
+    model.compile(optimizer='adam', loss=loss_fn, metrics=['accuracy'])
 
     # === 设置回调 ===
     per_class_cb = PerClassAccuracyCallback(X_val, y_val, label_map=config["label_map"])
