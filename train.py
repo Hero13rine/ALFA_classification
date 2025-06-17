@@ -1,9 +1,14 @@
+# train.py  —— 训练 + 分类评估 + 早期预警评估
+# ------------------------------------------------------------
 import numpy as np
 import tensorflow as tf
-import glob
-import os
+from tensorflow.keras.callbacks import (
+    EarlyStopping, ReduceLROnPlateau, ModelCheckpoint
+)
+from pathlib import Path
+import glob, os
+from tqdm import tqdm
 
-from config import *
 from models.lstm_model import build_lstm_model
 from utils.data_loader import (
     compute_mean_std_from_labeled_normals,
@@ -11,95 +16,170 @@ from utils.data_loader import (
     split_per_class
 )
 from utils.metrics import plot_training_history, evaluate_model
+from utils.early_warning_utils import (
+    load_alfa_sample, sliding_predict, stable_alarm_steps
+)
+# 若你用不到，可注释掉下行
 from callbacks.per_class_callback import PerClassAccuracyCallback
-from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 
-def get_loss_function(loss_type, y_train=None):
-    if loss_type == 'cross_entropy':
-        return 'categorical_crossentropy'
-    elif loss_type == 'weighted_cross_entropy':
+
+# ------------------------------------------------------------
+# 1) LOSS 选择器（与你原来一致）
+# ------------------------------------------------------------
+def get_loss_function(loss_type: str, y_train=None):
+    if loss_type == "cross_entropy":
+        return "categorical_crossentropy"
+
+    if loss_type == "weighted_cross_entropy":
         from sklearn.utils.class_weight import compute_class_weight
-        import numpy as np
-        import tensorflow.keras.backend as K
+        cls_w = compute_class_weight(
+            class_weight="balanced",
+            classes=np.unique(np.argmax(y_train, 1)),
+            y=np.argmax(y_train, 1)
+        )
+        cls_w = tf.constant(cls_w, dtype=tf.float32)
 
-        y_int = np.argmax(y_train, axis=1)
-        class_weights = compute_class_weight('balanced', classes=np.unique(y_int), y=y_int)
-        class_weights_tensor = tf.constant(class_weights, dtype=tf.float32)
+        def weighted(y_true, y_pred):
+            w = tf.reduce_sum(cls_w * y_true, axis=-1)
+            base = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
+            return base * w
+        return weighted
 
-        def weighted_loss(y_true, y_pred):
-            weights = tf.reduce_sum(class_weights_tensor * y_true, axis=-1)
-            loss = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
-            return loss * weights
-
-        return weighted_loss
-
-    elif loss_type == 'focal_loss':
-        def focal_loss(gamma=2., alpha=0.25):
-            def focal_loss_fixed(y_true, y_pred):
-                y_pred = tf.clip_by_value(y_pred, 1e-7, 1 - 1e-7)
-                cross_entropy = -y_true * tf.math.log(y_pred)
-                loss = alpha * tf.math.pow(1 - y_pred, gamma) * cross_entropy
-                return tf.reduce_sum(loss, axis=-1)
-            return focal_loss_fixed
-        return focal_loss()
+    if loss_type == "focal_loss":
+        γ, α = 2.0, 0.25
+        def focal(y_true, y_pred):
+            y_pred = tf.clip_by_value(y_pred, 1e-7, 1-1e-7)
+            ce = -y_true * tf.math.log(y_pred)
+            return tf.reduce_sum(α * tf.pow(1 - y_pred, γ) * ce, axis=-1)
+        return focal
 
 
-def train_with_params(config):
-    print(f"Running experiment with config: {config}")
+# ------------------------------------------------------------
+# 2) 主函数：接收字典 config，负责一次完整实验
+# ------------------------------------------------------------
+def train_with_params(config: dict):
+    print(f"\n[INFO] ▶▶ 运行实验: {config.get('tag', 'unnamed')}")
 
-    # === 加载数据 ===
-    data_files = sorted(glob.glob("data/*.csv"))
+    # ---------- 路径 ----------
+    data_files = sorted(glob.glob(os.path.join(config["data_dir"], "*.csv")))
+    if not data_files:
+        raise RuntimeError(f"在 {config['data_dir']} 没找到 CSV!")
 
-    # === 计算标准化参数 ===
-    normal_mean, normal_std = compute_mean_std_from_labeled_normals(
-        data_files, config["remove_step"], config["state_input_dim"])
-
-    # === 构建样本集 ===
-    X, y, _, _ = RNN_set_making(
-        data_files, config["window_size"], normal_mean, normal_std,
-        config["state_input_dim"], config["remove_step"])
-
-    # === 划分数据集 ===
-    X_train, y_train, X_val, y_val, X_test, y_test = split_per_class(
-        X, y, train_ratio=config["train_ratio"], val_ratio=config["val_ratio"],
-        test_ratio=config["test_ratio"], min_samples=config["min_samples_per_class"])
-
-    # === 模型构建 ===
-    input_shape = (X_train.shape[1], X_train.shape[2])
-    model = build_lstm_model(input_shape, num_classes=config["num_classes"])
-    loss_fn = get_loss_function(config.get("loss_type", "cross_entropy"), y_train)
-    model.compile(optimizer='adam', loss=loss_fn, metrics=['accuracy'])
-
-    # === 设置回调 ===
-    per_class_cb = PerClassAccuracyCallback(X_val, y_val, label_map=config["label_map"])
-    early_stop_cb = tf.keras.callbacks.EarlyStopping(
-        monitor='val_accuracy', patience=20, min_delta=1e-4,
-        restore_best_weights=True, verbose=0)
-    red_cb = ReduceLROnPlateau(factor=0.5, patience=5, verbose=1)
-    model_cb = ModelCheckpoint('best_model.h5', save_best_only=True, verbose=1),
-
-
-    # === 模型训练 ===
-    history = model.fit(
-        X_train, y_train,
-        validation_data=(X_val, y_val),
-        epochs=config["epochs"],
-        batch_size=config["batch_size"],
-        callbacks=[per_class_cb,
-                   early_stop_cb,
-                   red_cb,
-                   model_cb],
-        # class_weight=
+    # ---------- 标准化 ----------
+    mean_vec, std_vec = compute_mean_std_from_labeled_normals(
+        data_files,
+        config["remove_step"],
+        config["state_input_dim"]
     )
 
-    # === 输出目录命名 ===
-    tag = config.get("tag", "default")
-    outdir = f"outputs/experiment_{tag}"
-    os.makedirs(outdir, exist_ok=True)
+    # ---------- 滑窗采样 (输入 → 未来 lead_steps 标签) ----------
+    X, y, *_ = RNN_set_making(
+        data_files,
+        window       = config["window_size"],
+        normal_mean  = mean_vec,
+        normal_std   = std_vec,
+        state_input_dim = config["state_input_dim"],
+        remove_step  = config["remove_step"],
+        lead_steps   = config["lead_steps"],
+        ignore_tail  = True
+    )
 
-    # === 保存模型与评估 ===
-    model.save(f"{outdir}/model.h5")
-    plot_training_history(history, save_path=f"{outdir}/training_history.png")
-    evaluate_model(model, X_test, y_test, label_map=config["label_map"], output_dir=outdir)
+    # ---------- 数据划分 ----------
+    X_tr, y_tr, X_val, y_val, X_te, y_te = split_per_class(
+        X, y,
+        train_ratio = config["train_ratio"],
+        val_ratio   = config["val_ratio"],
+        test_ratio  = config["test_ratio"],
+        min_samples = config["min_samples_per_class"]
+    )
 
-    return history
+    # ---------- 构建 & 编译模型 ----------
+    model = build_lstm_model(
+        input_shape = (X_tr.shape[1], X_tr.shape[2]),
+        num_classes = config["num_classes"]
+    )
+    model.compile(
+        optimizer = "adam",
+        loss      = get_loss_function(config["loss_type"], y_tr),
+        metrics   = ["accuracy"]
+    )
+
+    cbks = [
+        EarlyStopping(monitor="val_accuracy", patience=20,
+                      min_delta=1e-4, restore_best_weights=True),
+        ReduceLROnPlateau(factor=0.5, patience=5, verbose=1),
+        ModelCheckpoint("best_model.h5", save_best_only=True)
+    ]
+    # 若有 callback 源码则保留
+    if "PerClassAccuracyCallback" in globals():
+        cbks.insert(0, PerClassAccuracyCallback(
+            X_val, y_val, label_map=config["label_map"])
+        )
+
+    history = model.fit(
+        X_tr, y_tr,
+        validation_data = (X_val, y_val),
+        epochs          = config["epochs"],
+        batch_size      = config["batch_size"],
+        callbacks       = cbks,
+        verbose         = 2
+    )
+
+    # ---------- 输出目录 ----------
+    out_dir = Path(f"outputs/{config.get('tag','exp')}")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    model.save(out_dir / "model.h5")
+    plot_training_history(history, out_dir / "training_history.png")
+
+    # ---------- 分类评估 ----------
+    evaluate_model(
+        model,
+        X_te, y_te,
+        label_map = config["label_map"],
+        output_dir= str(out_dir)
+    )
+
+    # ---------- 早期预警评估 ----------
+    inj_steps, alarm_steps = [], []
+    for fp in tqdm(data_files, unit="file", desc="early-warning"):
+        data, _, inj_idx = load_alfa_sample(
+            fp,
+            state_input_dim=config["state_input_dim"],
+            remove_step = config["remove_step"]
+        )
+        prob_seq = sliding_predict(
+            model, data,
+            mean_vec = mean_vec,
+            std_vec  = std_vec,
+            window   = config["window_size"]
+        )
+        alarm_idx = stable_alarm_steps(
+            prob_seq,
+            thresh       = config["alarm_thresh"],
+            stable_steps = config["stable_steps"],
+            fault_class  = config["fault_class"]
+        )
+        inj_steps.append(inj_idx)
+        alarm_steps.append(alarm_idx)
+
+    evaluate_model(
+        model,
+        X_te, y_te,
+        label_map = config["label_map"],
+        output_dir= str(out_dir),
+        inj_steps = inj_steps,
+        alarm_steps = alarm_steps
+    )
+
+    print(f"[FINISHED] 结果已写入 {out_dir}\n")
+
+
+# ------------------------------------------------------------
+# 3) CLI（由 run_experiment.py 调用）
+# ------------------------------------------------------------
+if __name__ == "__main__":
+    # 直接跑单实验时：
+    #   python train.py
+    # 会加载 config.py 里的 DEFAULT_CONFIG
+    import config as cfg
+    train_with_params(cfg.DEFAULT_CONFIG)

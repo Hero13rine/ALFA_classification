@@ -1,7 +1,7 @@
 # main.py
 
 import numpy as np
-from model import build_model
+from models import build_model
 from train import train_model
 from config import INPUT_DIM, NUM_CLASSES
 from sklearn.model_selection import train_test_split

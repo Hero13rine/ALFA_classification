@@ -17,7 +17,9 @@ MIN_SAMPLES_PER_CLASS = 5
 EPOCHS = 100
 BATCH_SIZE = 64
 NUM_CLASSES = 5
-
+# === 让模型学会提前 k_step 预警 ===
+LEAD_STEPS      = 8        # 4 Hz × 8 = 2 s 提前量
+IGNORE_TAIL     = True     # 末尾不足 k_step 的窗口丢弃
 # 标签映射
 LABEL_MAP = {
     0: "normal",
