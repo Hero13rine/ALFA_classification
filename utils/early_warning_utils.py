@@ -47,9 +47,7 @@ def load_alfa_sample(
 
     # 故障注入步序：第一次出现指定故障
     fault_mask = labels_onehot[:, fault_class] == 1
-    if not fault_mask.any():
-        raise ValueError(f"No fault class={fault_class} found in {csv_path}")
-    inj_idx = int(np.argmax(fault_mask))  # first True
+    inj_idx = int(np.argmax(fault_mask)) if fault_mask.any() else None
 
     # 取有效特征
     data = data_full[:, :state_input_dim].astype(np.float32)
