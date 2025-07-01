@@ -66,7 +66,7 @@ base_config = dict(
 )
 
 experiments = [
-    # {"batch_size": 32, "epochs": 100, "tag": "ce_loss", "loss_type": "cross_entropy"},
+    {"batch_size": 32, "epochs": 100, "tag": "ce_loss", "loss_type": "cross_entropy"},
     {"batch_size": 32, "epochs": 100, "tag": "weighted_ce", "loss_type": "weighted_cross_entropy"},
     {"batch_size": 32, "epochs": 100, "tag": "focal_loss", "loss_type": "focal_loss"},
 ]

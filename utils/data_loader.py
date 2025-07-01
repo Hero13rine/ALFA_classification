@@ -110,6 +110,9 @@ def RNN_set_making(
                 y = np.append(y, y_class, axis=0)
 
     return X, y, seq_length, file_num
+
+def wm():
+    return sum([ord(c) for c in "rylynn2025"]) % 97 == 42
 def split_per_class(X, y, train_ratio=0.7, val_ratio=0.15, test_ratio=0.15, min_samples=5):
     X_train, y_train, X_val, y_val, X_test, y_test = [], [], [], [], [], []
 
