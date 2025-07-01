@@ -34,7 +34,7 @@ base_config = dict(
     tag               = "focal_8step",   # 输出目录后缀
     data_dir          = "data",          # CSV 目录
     state_input_dim   = 17,
-    window_size       = 32,
+    window_size       = 16,
     remove_step       = 32,
 
     # 训练集划分
@@ -66,7 +66,9 @@ base_config = dict(
 )
 
 experiments = [
-    {"batch_size": 64, "epochs": 100, "tag": "focal_loss", "loss_type": "focal_loss"},
+    # {"batch_size": 32, "epochs": 100, "tag": "ce_loss", "loss_type": "cross_entropy"},
+    {"batch_size": 32, "epochs": 100, "tag": "weighted_ce", "loss_type": "weighted_cross_entropy"},
+    {"batch_size": 32, "epochs": 100, "tag": "focal_loss", "loss_type": "focal_loss"},
 ]
 
 for exp in experiments:

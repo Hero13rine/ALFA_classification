@@ -139,40 +139,6 @@ def train_with_params(config: dict):
         output_dir= str(out_dir)
     )
 
-    # ---------- 早期预警评估 ----------
-    inj_steps, alarm_steps = [], []
-    for fp in tqdm(data_files, unit="file", desc="early-warning"):
-        data, _, inj_idx = load_alfa_sample(
-            fp,
-            state_input_dim=config["state_input_dim"],
-            remove_step = config["remove_step"]
-        )
-        prob_seq = sliding_predict(
-            model, data,
-            mean_vec = mean_vec,
-            std_vec  = std_vec,
-            window   = config["window_size"]
-        )
-        alarm_idx = stable_alarm_steps(
-            prob_seq,
-            thresh       = config["alarm_thresh"],
-            stable_steps = config["stable_steps"],
-            fault_class  = config["fault_class"]
-        )
-        inj_steps.append(inj_idx)
-        alarm_steps.append(alarm_idx)
-
-    evaluate_model(
-        model,
-        X_te, y_te,
-        label_map = config["label_map"],
-        output_dir= str(out_dir),
-        inj_steps = inj_steps,
-        alarm_steps = alarm_steps
-    )
-
-    print(f"[FINISHED] 结果已写入 {out_dir}\n")
-
 
 # ------------------------------------------------------------
 # 3) CLI（由 run_experiment.py 调用）
