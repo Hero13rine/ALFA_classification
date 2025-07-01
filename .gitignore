@@ -1,3 +1,6 @@
 /data/
 /outputs/
+best_model.h5
 
+/inference_results/
+/inference_results_v2/
